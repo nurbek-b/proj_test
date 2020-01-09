@@ -3,27 +3,37 @@ from django.shortcuts import render, get_object_or_404
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 from .models import Post, Comment
 from django.views.generic import ListView, RedirectView
-from .forms import EmailPostForm, CommentForm
+from .forms import EmailPostForm, CommentForm, SearchForm
+from taggit.models import Tag
+from django.db.models import Count
+from django.contrib.postgres.search import SearchVector
 
 
-class PostListView(ListView):
-    queryset = Post.published.all()
-    context_object_name = 'posts'
-    paginate_by = 2
-    template_name = 'list.html'
+# class PostListView(ListView):
+#     queryset = Post.published.all()
+#     context_object_name = 'posts'
+#     paginate_by = 2
+#     template_name = 'list.html'
 
-# def post_list(request):
-#     object_list = Post.published.all()
-#     paginator = Paginator(object_list, 2)
-#     page = request.GET.get('page')
-#     try:
-#         posts = paginator.page(page)
-#     except PageNotAnInteger:
-#         posts = paginator.page(1)
-#     except EmptyPage:
-#         posts = paginator.page(paginator.num_pages)
-#     return render(request, 'list.html', {'page': page,
-#                                          'posts': posts})
+def post_list(request, tag_slug=None):
+    object_list = Post.published.all()
+
+    tag = None
+    if tag_slug:
+        tag = get_object_or_404(Tag, slug=tag_slug)
+        object_list = object_list.filter(tags__in=[tag])
+
+    paginator = Paginator(object_list, 2)
+    page = request.GET.get('page')
+    try:
+        posts = paginator.page(page)
+    except PageNotAnInteger:
+        posts = paginator.page(1)
+    except EmptyPage:
+        posts = paginator.page(paginator.num_pages)
+    return render(request, 'list.html', {'page': page,
+                                         'posts': posts,
+                                         'tag': tag})
 
 
 def post_detail(request, year, month, day, post):
@@ -40,10 +50,15 @@ def post_detail(request, year, month, day, post):
             new_comment.save()
     else:
         comment_form = CommentForm()
+    post_tags_ids = post.tags.values_list('id', flat=True)
+    similar_posts = Post.published.filter(tags__in=post_tags_ids).exclude(id=post.id)
+    similar_posts = similar_posts.annotate(same_tags=Count('tags'))\
+        .order_by('-same_tags', '-publish')[:4]
     return render(request, 'detail.html', {'post': post,
                                            'comments': comments,
                                            'new_comment': new_comment,
-                                           'comment_form': comment_form})
+                                           'comment_form': comment_form,
+                                           'similar_posts': similar_posts})
 
 
 def post_share(request, post_id):
@@ -83,3 +98,18 @@ class PostLike(RedirectView):
             else:
                 obj.likes.add(user)
         return url_
+
+
+def post_search(request):
+    form = SearchForm()
+    query = None
+    results = []
+    if 'query' in request.GET:
+        form = SearchForm(request.GET)
+    if form.is_valid():
+        query = form.cleaned_data['query']
+        results = Post.objects.annotate(search=SearchVector('title', 'body'),
+                                        ).filter(search=query)
+    return render(request, 'post/search.html', {'form': form,
+                                                'query': query,
+                                                'results': results})
